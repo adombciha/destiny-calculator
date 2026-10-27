@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "destiny-calculator"
+version = "0.1.0"
+description = "BaZi charts and shared birth data for Chinese and Western astrology."
+readme = "README.md"
+requires-python = ">=3.15,<3.16"
+dependencies = ["lunar-python==1.4.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+destiny_calculator = ["data/*.json"]

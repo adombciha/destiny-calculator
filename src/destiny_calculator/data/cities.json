@@ -1,0 +1,34 @@
+{
+  "source": "GeoNames",
+  "source_url": "https://www.geonames.org/",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "retrieved_on": "2026-10-28",
+  "coordinate_note": "City representative points, not exact birth locations. Traditional Chinese display names supplied by this project.",
+  "cities": [
+    {
+      "geonameid": 1668341,
+      "source_url": "https://www.geonames.org/1668341/taipei.html",
+      "name": "臺北",
+      "latitude": 25.05306,
+      "longitude": 121.52639,
+      "timezone": "Asia/Taipei"
+    },
+    {
+      "geonameid": 1668399,
+      "source_url": "https://www.geonames.org/1668399/taichung.html",
+      "name": "臺中",
+      "latitude": 24.14690,
+      "longitude": 120.68390,
+      "timezone": "Asia/Taipei"
+    },
+    {
+      "geonameid": 1673820,
+      "source_url": "https://www.geonames.org/1673820/kaohsiung.html",
+      "name": "高雄",
+      "latitude": 22.61626,
+      "longitude": 120.31333,
+      "timezone": "Asia/Taipei"
+    }
+  ]
+}

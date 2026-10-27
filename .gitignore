@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local development plan
+/PLAN.md
+
+# Local Python runtime
+/.python/
