@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "source_repository": "https://github.com/aloistr/swisseph",
+  "source_revision": "ad0935c2993405b57db161240e0af7e451840efd",
+  "license_source": "https://www.astro.com/swisseph/swephinfo_e.htm",
+  "files": [
+    {
+      "name": "sepl_18.se1",
+      "url": "https://raw.githubusercontent.com/aloistr/swisseph/ad0935c2993405b57db161240e0af7e451840efd/ephe/sepl_18.se1",
+      "size_bytes": 484055,
+      "sha256": "0b7e416e3c1be9e6a0dd1d711dae7f7685793a0e7df13f76363a493dc27b6ea1",
+      "git_blob_sha1": "41a1e26c7223c4c74310d61a3d66aa6c24a77e9a"
+    },
+    {
+      "name": "semo_18.se1",
+      "url": "https://raw.githubusercontent.com/aloistr/swisseph/ad0935c2993405b57db161240e0af7e451840efd/ephe/semo_18.se1",
+      "size_bytes": 1304771,
+      "sha256": "ecfa54dbf5bc0b5a9bc3e04ed28629a821e98625eacae38f4070593bba0e2980",
+      "git_blob_sha1": "9396778a5454f41f36f6d4eba4409005717986db"
+    }
+  ]
+}
