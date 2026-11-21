@@ -1,16 +1,28 @@
+import importlib.util
 import json
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from destiny_calculator import (
     BirthData,
     BirthPlace,
     calculate_bazi,
+    calculate_heluo,
+    calculate_jyotish,
+    calculate_qizheng,
+    calculate_western,
     calculate_ziwei,
     export_chart_json,
     export_report_json,
     get_city,
+)
+
+
+EPHEMERIS = Path(__file__).resolve().parents[1] / "data" / "ephemeris"
+HAS_WESTERN = importlib.util.find_spec("swisseph") is not None and all(
+    (EPHEMERIS / name).is_file() for name in ("sepl_18.se1", "semo_18.se1")
 )
 
 
@@ -197,6 +209,42 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(partial["results"]["ziwei"]["status"], "error")
         self.assertEqual(partial["errors"][0]["system"], "ziwei")
         self.assertEqual(partial["results"]["bazi"]["status"], "ok")
+
+    @unittest.skipUnless(HAS_WESTERN, "Install Swiss Ephemeris and data.")
+    def test_adds_four_timing_systems_to_single_and_combined_reports(self):
+        western, jyotish, qizheng = (
+            calculate(self.birth, ephemeris_path=EPHEMERIS)
+            for calculate in (calculate_western, calculate_jyotish, calculate_qizheng)
+        )
+        heluo = calculate_heluo(self.birth)
+        query = self.bazi.query_datetime
+        options = dict(query_datetime=query, timing_years=(2, 1))
+        report = json.loads(export_report_json((self.bazi, self.ziwei, western, jyotish, qizheng, heluo), **options))
+        self.assertEqual(report["query_datetime"], query.isoformat())
+        methods = {"annual_profections", "firdaria", "releasing_fortune", "releasing_spirit"}
+        for name, chart, expected in (
+            ("western", western, methods), ("jyotish", jyotish, {"vimshottari"}),
+            ("qizheng", qizheng, {"qizheng"}), ("heluo", heluo, {"heluo"}),
+        ):
+            with self.subTest(name=name):
+                result = report["results"][name]["data"]
+                timing = result["timing"]
+                single = json.loads(export_chart_json(chart, **options))
+                self.assertEqual(timing, single["results"][name]["data"]["timing"])
+                self.assertEqual(timing["starts_at"], "2024-10-28T12:00:00+08:00")
+                self.assertEqual(timing["ends_at"], "2027-10-28T12:00:00+08:00")
+                self.assertEqual(expected, {p["method"] for p in timing["current"]})
+                for p in timing["current"]:
+                    self.assertLessEqual(datetime.fromisoformat(p["starts_at"]), query)
+                    self.assertLess(query, datetime.fromisoformat(p["ends_at"]))
+                    self.assertIn(p, timing["periods"])
+        jyotish_periods = report["results"]["jyotish"]["data"]["timing"]["current"]
+        self.assertTrue(all(len(p["lords"]) == p["level"] for p in jyotish_periods))
+        legacy = json.loads(export_chart_json(western))
+        self.assertEqual(set(legacy["results"]), {"bazi", "ziwei", "western"})
+        self.assertNotIn("timing", legacy["results"]["western"]["data"])
+        with self.assertRaisesRegex(ValueError, "same birth data and query instant"):
+            export_report_json((self.bazi, heluo), query_datetime=query + timedelta(seconds=1))
 
     def test_rejects_mixed_births_queries_duplicates_and_conflicting_errors(self):
         others = (

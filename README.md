@@ -1,12 +1,10 @@
 # Destiny Calculator
 
-以 Python 建立紫微斗數、八字及西洋占星排盤工具。
-
-已提供本機 Streamlit 介面：輸入一次出生資料，即可查看紫微、八字及西洋本命盤，切換紫微／八字流年流月，並下載 SVG 命盤圖與 JSON 報告。PNG、PDF 及自動文字解盤尚未實作。
+本機 Streamlit 命盤工具。輸入一次出生資料後，可查看紫微斗數、八字、西洋占星、印度占星、七政四餘與河洛理數。介面提供運限時間軸、原有三種 SVG 命盤和各系統的 JSON 報告。
 
 ## 本機 GUI
 
-在專案根目錄安裝介面與西洋的可選依賴，並取得固定版本的官方星曆：
+在專案根目錄安裝介面與天文排盤的可選依賴，並取得固定版本的官方星曆。
 
 ```bash
 uv pip install --python .venv/bin/python -e '.[ui,western]'
@@ -22,9 +20,13 @@ uv pip install --python .venv/bin/python -e '.[ui,western]'
 
 - **紫微斗數**提供本命、大限、流年、流月，可在其他圖層加顯大限。月份導覽依農曆月及閏月分段切換。
 - **八字**顯示四柱、藏干、十神、起運及當前大運。節氣年月區間顯示精確起訖，月份導覽依節氣切換。
-- **西洋占星**以出生時刻排本命圓盤，顯示十天體、逆行、主要相位、Placidus 宮位、上升及天頂。宮位不可用時仍可查看天體與相位。
+- **西洋占星**顯示本命圓盤，並提供年度小限、法達星限和福點／精神點黃道分期。
+- **印度占星**顯示 Lahiri D1、D9、D10、月宿與 Vimshottari 的三層運限。
+- **七政四餘**顯示十一曜、命宮、宿度、十干化曜與童限、大限、小限及生日行度。
+- **河洛理數**顯示先後天卦、元堂、大運爻和流年卦爻。
+- **運限時間軸**用同一段日期比較上述四套運限。可直接跳到指定日期，並查看當期及完整區段。「多年瀏覽與 JSON 匯出範圍」控制回溯與預測年數。
 
-各盤可下載畫面所示的 SVG 及完整的單盤 JSON。命盤圖無法繪製時，仍可查看完整資料與下載單盤 JSON。「下載合併 JSON 報告」包含所有可用命盤及個別計算錯誤。「清除資料與結果」清除本次連線的輸入與結果。出生資料預設僅暫存於本機記憶體，下載的 SVG 與 JSON 含出生資訊。
+每個系統可下載單盤 JSON。紫微、八字與西洋本命另提供 SVG。「下載合併 JSON 報告」包含所有可用命盤及個別計算錯誤。「清除資料與結果」清除本次連線的輸入與結果。出生資料預設僅暫存於本機記憶體，下載的 SVG 與 JSON 含出生資訊。
 
 本機已在 Python 3.15.2、Linux／WSL 驗證 Streamlit 1.66.1 與 pyswisseph 2.10.3.2。若編譯時找不到 Python 建置設定中的 `clang`，可指定本機已安裝的編譯器後重試：
 
@@ -192,6 +194,17 @@ report_json = export_report_json((bazi, ziwei, western))
 
 星曆固定為官方 [Swiss Ephemeris commit ad0935c2](https://github.com/aloistr/swisseph/tree/ad0935c2993405b57db161240e0af7e451840efd/ephe) 的 DE431 資料；來源與兩檔 SHA-256 在 `data/ephemeris_manifest.json`。實際星曆位於專案的 `data/ephemeris/`，受 Git 忽略，未包含在 Python 套件內；更換工作目錄呼叫 API 時請傳絕對路徑。缺檔、雜湊不符或回傳模式退回 Moshier 均報錯，不在計算時自動下載。
 
+## 運限規則與 JSON
+
+- **西洋時間主星**依出生地太陽真高度判定日夜。年度小限用生日與整宮守護星，閏日生在平年以 2 月 28 日換段。法達以 Abu Maʿshar 日夜順序排列，交點置於首輪末尾，75 年後沿用同序循環。黃道分期採 Valens 福點／精神點、360 日年、30 日月及前兩層，次期走完一圈後按原典跳至對宮。 [《Anthologies》卷四](https://raw.githubusercontent.com/janegca/latex-valens/main/Valens-Anthologies-Annotated.pdf) · [法達規則引文](https://birchfieldastrology.com/wp-content/uploads/2020/07/firdar_revision-02-2020-07-13.pdf)
+- **印度占星**採 Lahiri、地心、平均羅喉與整宮。Vimshottari 依月亮宿內黃經弧長算出生餘運，每年 365.2425 日，涵蓋出生後 120 個固定年。 [分盤與大運算例](https://www.vedicastrologer.org/articles/vedic_astro_textbook.pdf)
+- **七政四餘**使用 Swiss Ephemeris 七曜、平均月交點和平均月球遠地點。紫炁採明代躔度為錨點與 10,228 日週期。二十八宿採《新法曆書》1628 年固定黃道宿界。命宮用當地視太陽時支，十干化曜用 UTC+8 立春年干。童限與百六大限用等寬宮位換算，行度輸出各生日的快照。採用當日距星、不同交點或古制不等宮的排盤會出現差異。 [黃道宿度表](https://zh.wikisource.org/zh-hant/欽定古今圖書集成/曆象彙編/曆法典/第053卷) · [《張果星宗》影印](https://zh.wikisource.org/wiki/Index:Gujin_Tushu_Jicheng,_Volume_468_(1700-1725).djvu) · [紫炁推算考證](https://faculty.ustc.edu.cn/niuweixing/en/lwcg/64060/content/20711.htm)
+- **河洛理數**採 1929 年文明書局本。以現有八字四柱起卦、按農曆正月初一換流年，先天與後天各走六爻。農曆閏月沿用原月序。 [《河洛理數》卷一](https://www.shidianguji.com/zh/book/NA09030/chapter/1m8od60nhc1me)
+
+`calculate_jyotish(birth, ephemeris_path=...)`、`calculate_qizheng(birth, ephemeris_path=...)` 與 `calculate_heluo(birth)` 回傳本命及運限資料。`calculate_western_timing(western_chart, through=...)` 以已算好的西洋本命盤產生時間主星。
+
+`export_report_json(charts, query_datetime=query, timing_years=(2, 5))` 會在 `results` 附加所選系統，西洋時間主星放在 `results.western.data.timing`。`timing.starts_at` 和 `timing.ends_at` 為查詢時窗，`current` 為查詢時刻的區段，`periods` 為與時窗相交的區段及當期。每段附原始起訖，開始包含、結束不含。`export_chart_json` 支援相同參數。
+
 ## 自訂地點與夏令時間
 
 內建 `list_cities()` 提供臺北、臺中、高雄。其他地點可自行指定經緯度及時區：
@@ -225,7 +238,7 @@ print(birth.utc_datetime.isoformat())
 
 ## 城市資料來源
 
-完整依賴與星曆環境目前共 84 項測試通過。未安裝可選介面／西洋依賴或未備齊星曆時，相關測試會明確跳過；核心 API 不因缺少可選套件而無法匯入。西洋整盤 fixture 由同版 Swiss Ephemeris 的原生 C ABI 直接呼叫產生，與 Python 排盤函式分開，用來驗證時間與資料整合；這仍不是獨立天文引擎的精度認證。
+未安裝可選介面或天文依賴時，相關測試會跳過。核心 API 可獨立匯入。西洋、印度與七政的天文位置測試用同版 Swiss Ephemeris 原生 C ABI 和固定星曆核對。運限測試另涵蓋分盤界線、福點及精神點、對宮跳轉、生日行度及河洛古籍命例。
 
 離線城市資料取自 [GeoNames](https://www.geonames.org/)，採 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)，查證日期為 2026-10-28。原始城市名稱改為繁體中文顯示；座標、時區、geonameid 與來源網址記錄於套件的 `data/cities.json`。
 
@@ -233,4 +246,4 @@ print(birth.utc_datetime.isoformat())
 - [臺中](https://www.geonames.org/1668399/taichung.html)
 - [高雄](https://www.geonames.org/1673820/kaohsiung.html)
 
-目前在本機處理出生資料，沒有預設存檔或線上排盤請求。海外八字已驗證跨時區節氣切換與當地日／時柱的選定案例；三套引擎、SVG／JSON 與本機介面已接入。文墨指定流年流月的全面相容性、PNG／PDF、自動合沖與跨系統文字解讀仍待後續驗證或實作。
+出生資料在本機處理。排盤由本機星曆和曆法套件計算，匯出由使用者觸發。

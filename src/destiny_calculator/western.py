@@ -1,5 +1,6 @@
 """Calculate tropical geocentric natal charts with verified Swiss Ephemeris data."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
@@ -154,40 +155,50 @@ def _aspects(planets):
     return tuple(result)
 
 
-def calculate_western(birth: BirthData, *, ephemeris_path: str | Path) -> WesternChart:
-    if not isinstance(birth, BirthData):
-        raise ValueError("birth must be a BirthData.")
+@contextmanager
+def ephemeris_session(ephemeris_path: str | Path):
     try:
         import swisseph as swe
 
         wrapper_version = version("pyswisseph")
     except (ImportError, PackageNotFoundError) as error:
         raise ValueError(
-            "Install destiny-calculator[western] to calculate Western charts."
+            "Install destiny-calculator[western] to calculate astronomical charts."
         ) from error
     directory, revision, verified = _verified_files(ephemeris_path)
-    utc = birth.utc_datetime
-    flags = swe.FLG_SWIEPH | swe.FLG_SPEED
-    planets = []
-    cusps = ascendant = midheaven = None
-    house_error = None
     # Swiss Ephemeris stores its path and time settings outside individual calls.
     with _LOCK:
         swe.set_ephe_path(str(directory))
         swe.set_delta_t_userdef(swe.DELTAT_AUTOMATIC)
         swe.set_tid_acc(swe.TIDAL_AUTOMATIC)
+        yield swe, wrapper_version, revision, verified
+
+
+def julian_days(swe, utc):
+    days = swe.utc_to_jd(
+        utc.year,
+        utc.month,
+        utc.day,
+        utc.hour,
+        utc.minute,
+        utc.second + utc.microsecond / 1_000_000,
+        swe.GREG_CAL,
+    )
+    if not all(isfinite(value) for value in days):
+        raise ValueError("Invalid Julian day returned by the ephemeris engine.")
+    return days
+
+
+def calculate_western(birth: BirthData, *, ephemeris_path: str | Path) -> WesternChart:
+    if not isinstance(birth, BirthData):
+        raise ValueError("birth must be a BirthData.")
+    planets = []
+    cusps = ascendant = midheaven = None
+    house_error = None
+    with ephemeris_session(ephemeris_path) as (swe, wrapper_version, revision, verified):
+        flags = swe.FLG_SWIEPH | swe.FLG_SPEED
         try:
-            jd_tt, jd_ut1 = swe.utc_to_jd(
-                utc.year,
-                utc.month,
-                utc.day,
-                utc.hour,
-                utc.minute,
-                utc.second + utc.microsecond / 1_000_000,
-                swe.GREG_CAL,
-            )
-            if not all(isfinite(v) for v in (jd_tt, jd_ut1)):
-                raise ValueError("Invalid Julian day returned by the ephemeris engine.")
+            jd_tt, jd_ut1 = julian_days(swe, birth.utc_datetime)
             for code, name in PLANETS:
                 values, returned = swe.calc(jd_tt, getattr(swe, code), flags)
                 if returned != flags:

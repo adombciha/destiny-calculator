@@ -15,6 +15,9 @@ from destiny_calculator import (
     BirthPlace,
     NonexistentTimeError,
     calculate_bazi,
+    calculate_heluo,
+    calculate_jyotish,
+    calculate_qizheng,
     calculate_ziwei,
     calculate_western,
     export_chart_json,
@@ -28,12 +31,34 @@ from destiny_calculator import (
 )
 from destiny_calculator.charts import ziwei_transformation_rows
 from destiny_calculator.time_utils import DEFAULT_FLOW_YEARS, MAX_FLOW_YEARS
-from destiny_calculator.western import WesternChart, format_zodiac
+from destiny_calculator.timing import timing_bounds, timing_window
+from destiny_calculator.western import SIGNS, WesternChart, format_zodiac
+from destiny_calculator.western_timing import calculate_western_timing
 from destiny_calculator.ziwei import _browse_months, _browse_years
 
 
 FOLDS = {"自動判定（重複時間需另選）": None, "第一次": 0, "第二次": 1}
-SYSTEMS = {"ziwei": "紫微斗數", "bazi": "八字", "western": "西洋占星"}
+SYSTEMS = {
+    "ziwei": "紫微斗數", "bazi": "八字", "western": "西洋占星",
+    "jyotish": "印度占星", "qizheng": "七政四餘", "heluo": "河洛理數",
+}
+TIMING_LEVELS = {
+    "annual_profections": ("年度小限",),
+    "firdaria": ("法達大限", "法達小限"),
+    "releasing_fortune": ("黃道分期 · 福點", "黃道次期 · 福點"),
+    "releasing_spirit": ("黃道分期 · 精神點", "黃道次期 · 精神點"),
+    "vimshottari": ("印度大運", "印度次運", "印度細運"),
+    "qizheng": ("七政大限", "七政小限／行度"),
+    "heluo": ("河洛大運", "河洛流年"),
+}
+JYOTISH_NAMES = dict(zip(
+    ("Lagna", "Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu", "Ketu"),
+    ("上升", "太陽", "月亮", "火星", "水星", "木星", "金星", "土星", "羅喉", "計都"),
+))
+JYOTISH_SIGNS = dict(zip(
+    ("Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"),
+    SIGNS,
+))
 MODES = {
     "本命": ("natal",),
     "大限": ("natal", "decadal"),
@@ -43,17 +68,23 @@ MODES = {
 EPHEMERIS_PATH = Path(__file__).resolve().parent / "data" / "ephemeris"
 
 
-def calculate_results(birth, query):
+def calculate_results(birth, query, *, natal_charts=None):
     charts, errors = {}, {}
     for name, calculator in (("bazi", calculate_bazi), ("ziwei", calculate_ziwei)):
         try:
             charts[name] = calculator(birth, query.replace(tzinfo=None), fold=query.fold)
         except ValueError as error:
             errors[name] = str(error)
-    try:
-        charts["western"] = calculate_western(birth, ephemeris_path=EPHEMERIS_PATH)
-    except ValueError as error:
-        errors["western"] = str(error)
+    for name, calculator in (
+        ("western", partial(calculate_western, ephemeris_path=EPHEMERIS_PATH)),
+        ("jyotish", partial(calculate_jyotish, ephemeris_path=EPHEMERIS_PATH)),
+        ("qizheng", partial(calculate_qizheng, ephemeris_path=EPHEMERIS_PATH)),
+        ("heluo", calculate_heluo),
+    ):
+        try:
+            charts[name] = natal_charts[name] if natal_charts and name in natal_charts else calculator(birth)
+        except ValueError as error:
+            errors[name] = str(error)
     return charts, errors
 
 
@@ -89,7 +120,10 @@ def _reset_ziwei_browse(chart):
 def _set_query(birth, query=None, *, ziwei_mode=None):
     try:
         resolved = birth.resolve_query_time() if query is None else query
-        charts, errors = calculate_results(birth, resolved)
+        previous = st.session_state.get("report")
+        charts, errors = calculate_results(
+            birth, resolved, natal_charts=previous[2] if previous and previous[0] == birth else None
+        )
         if ziwei_mode is not None and "ziwei" not in charts:
             raise ValueError(errors["ziwei"])
         if not charts and errors:
@@ -282,7 +316,7 @@ def _navigation(chart, name):
         st.caption("停用的方向沒有可查詢的分段。")
 
 
-def _chart_preview(chart, renderer, name, alt, *, json_years=None, **options):
+def _chart_preview(chart, renderer, name, alt, *, json_years=None, json_query=None, **options):
     svg = None
     try:
         svg = renderer(chart, **options)
@@ -314,7 +348,10 @@ def _chart_preview(chart, renderer, name, alt, *, json_years=None, **options):
             "下載此盤完整 JSON",
             export_chart_json(chart)
             if json_years is None
-            else partial(export_chart_json, chart, ziwei_years=json_years, bazi_years=json_years),
+            else partial(
+                export_chart_json, chart, ziwei_years=json_years, bazi_years=json_years,
+                query_datetime=json_query, timing_years=json_years if json_query is not None else None,
+            ),
             file_name=f"{name}-{suffix}.json",
             mime="application/json",
             key=name + "_json",
@@ -510,8 +547,8 @@ def _ziwei(chart, json_years):
             )
 
 
-def _western(chart):
-    st.caption("西洋本命盤以出生瞬間計算。流年與流月查詢只影響紫微及八字。")
+def _western(chart, *, query, years, timing, timing_error):
+    st.caption("本命盤以出生瞬間計算，時間主星依目前查詢日期顯示。")
     alt = "西洋本命圓盤，含十天體及主要相位"
     if chart.house_status != "ok":
         st.warning("此地點與時刻的 Placidus 宮位不可用。仍可查看天體與相位。")
@@ -520,7 +557,7 @@ def _western(chart):
         columns = st.columns(2)
         columns[0].metric("上升 ASC", format_zodiac(chart.ascendant))
         columns[1].metric("天頂 MC", format_zodiac(chart.midheaven))
-    _chart_preview(chart, render_western_svg, "western", alt)
+    _chart_preview(chart, render_western_svg, "western", alt, json_years=years, json_query=query)
     with st.expander("天體、相位與宮位資料" if chart.house_cusps else "天體與相位資料"):
         st.subheader("天體", anchor=False)
         st.dataframe(
@@ -566,6 +603,160 @@ def _western(chart):
         st.caption(
             f"固定星曆來源：{chart.ephemeris_revision}；Swiss Ephemeris {chart.swiss_ephemeris_version}。"
         )
+    st.subheader("時間主星", anchor=False)
+    if timing_error is not None:
+        st.warning("時間主星無法計算。原因：" + timing_error)
+    elif timing is not None:
+        st.write("日生盤" if timing.sect == "day" else "夜生盤")
+        if timing.lot_of_fortune is not None:
+            st.write(
+                f"福點 {format_zodiac(timing.lot_of_fortune)} · 精神點 {format_zodiac(timing.lot_of_spirit)}"
+            )
+        else:
+            st.caption("此位置無可用上升點，可查看法達星限。")
+        _timing_panel(timing.periods, query, years)
+
+
+def _timing_label(period):
+    if period.method == "vimshottari":
+        return "／".join(JYOTISH_NAMES[name] for name in period.lords)
+    return period.label
+
+
+def _timing_stamp(instant, query):
+    return instant.astimezone(query.tzinfo).isoformat(sep=" ")
+
+
+def _timing_rows(periods, query):
+    return [
+        {
+            "運限": TIMING_LEVELS[p.method][p.level - 1],
+            "區段": _timing_label(p),
+            "開始（含）": _timing_stamp(p.starts_at, query),
+            "結束（不含）": _timing_stamp(p.ends_at, query),
+        }
+        for p in sorted(periods, key=lambda p: (p.starts_at.astimezone(UTC), p.method, p.level))
+    ]
+
+
+def _timing_panel(periods, query, years):
+    window = timing_window(periods, query, years)
+    if window.current:
+        st.dataframe(_timing_rows(window.current, query), hide_index=True)
+    else:
+        st.info("此查詢時間無適用區段。")
+    if window.periods and any(years):
+        with st.expander("查詢範圍內的完整區段"):
+            st.dataframe(_timing_rows(window.periods, query), hide_index=True)
+
+
+def _download_timed_chart(chart, name, query, years):
+    st.download_button(
+        "下載此盤完整 JSON",
+        partial(export_chart_json, chart, query_datetime=query, timing_years=years),
+        file_name=f"{name}-{query.date().isoformat()}.json",
+        mime="application/json",
+        key=f"{name}_json",
+        on_click="ignore",
+    )
+
+
+def _jyotish(chart, *, query, years):
+    moon = chart.moon_nakshatra
+    st.caption(f"Lahiri 恆星黃道 · 歲差 {chart.ayanamsha_degrees:.4f}°")
+    st.write(f"月宿 **{moon.name}** · 第 {moon.pada} 足 · 宿主 {JYOTISH_NAMES[moon.lord]}")
+    for tab, placements in zip(st.tabs(("D1 本命", "D9 九分盤", "D10 十分盤")), (chart.d1, chart.d9, chart.d10)):
+        with tab:
+            st.dataframe([
+                {
+                    "星曜": JYOTISH_NAMES[p.body], "星座": JYOTISH_SIGNS[p.sign], "宮位": p.house,
+                    **({"恆星黃經": round(p.longitude, 6)} if p.longitude is not None else {}),
+                }
+                for p in placements
+            ], hide_index=True)
+    st.subheader("Vimshottari 運限", anchor=False)
+    _timing_panel(chart.periods, query, years)
+    _download_timed_chart(chart, "jyotish", query, years)
+
+
+def _qizheng(chart, *, query, years):
+    st.write(f"命宮 **{chart.ming_palace}** · 命度 **{chart.ming_mansion}{chart.ming_mansion_degree:.2f}°**")
+    st.dataframe([
+        {
+            "曜": p.name, "黃經": round(p.longitude, 6), "宮": p.palace,
+            "宮度": round(p.palace_degree, 4), "宿": p.mansion, "宿度": round(p.mansion_degree, 4),
+        }
+        for p in chart.luminaries
+    ], hide_index=True)
+    with st.expander("十干化曜"):
+        st.caption(f"生年 {chart.birth_year_ganzhi}")
+        st.table([{"化曜": p.name, "星曜": p.luminary_name} for p in chart.transformations])
+    st.subheader("大限、小限與逐年行度", anchor=False)
+    _timing_panel(chart.periods, query, years)
+    _download_timed_chart(chart, "qizheng", query, years)
+
+
+def _heluo(chart, *, query, years):
+    st.caption("四柱 " + "　".join(p.gan_zhi for p in chart.four_pillars))
+    st.write(f"天數 {chart.heaven_number} · 地數 {chart.earth_number}")
+    for col, title, hexagram in zip(st.columns(2), ("先天卦", "後天卦"), (chart.earlier_heaven, chart.later_heaven)):
+        col.metric(title, hexagram.name, f"元堂 {hexagram.line_name}", delta_color="off")
+    st.subheader("大運爻與流年卦", anchor=False)
+    _timing_panel(chart.periods, query, years)
+    _download_timed_chart(chart, "heluo", query, years)
+
+
+def _set_timeline_day(birth, query, date_key):
+    local = datetime.combine(st.session_state[date_key], query.time())
+    if local == query.replace(tzinfo=None):
+        _set_query(birth, query)
+        return
+    if local <= birth.local_datetime and local.date() == birth.local_datetime.date():
+        _set_query(birth, birth.resolved_datetime)
+        return
+    try:
+        target = birth.resolve_query_time(local)
+    except ValueError as error:
+        st.session_state["navigation_error"] = _input_error(error, local, birth.place)
+    else:
+        _set_query(birth, target)
+
+
+def _timeline(birth, query, years, periods):
+    day, submit = st.columns((2, 1), vertical_alignment="bottom")
+    date_key = f"timing_day_{query.date().isoformat()}"
+    day.date_input("查看日期（出生地時間）", value=query.date(), min_value=birth.local_datetime.date(),
+                   max_value=date(2099, 12, 31), key=date_key)
+    submit.button("查看當日運限", on_click=_set_timeline_day, args=(birth, query, date_key))
+    window = timing_window(periods, query, years)
+    left, right = window.starts_at.astimezone(UTC), window.ends_at.astimezone(UTC)
+    rows = []
+    for p in window.periods:
+        if p.level != 1:
+            continue
+        start, end = max(left, p.starts_at.astimezone(UTC)), min(right, p.ends_at.astimezone(UTC))
+        if start < end:
+            lane = TIMING_LEVELS[p.method][0]
+            rows.append({
+                "運限": lane, "區段": _timing_label(p),
+                "開始": _timing_stamp(p.starts_at, query),
+                "結束": _timing_stamp(p.ends_at, query),
+                "start": start.isoformat(), "end": end.isoformat(),
+            })
+    if rows:
+        st.vega_lite_chart(rows, {
+            "description": "多系統運限比較",
+            "height": {"step": 29},
+            "mark": {"type": "bar", "cornerRadius": 3},
+            "encoding": {
+                "x": {"field": "start", "type": "temporal", "scale": {"type": "utc"}, "title": None},
+                "x2": {"field": "end"},
+                "y": {"field": "運限", "type": "nominal", "title": None},
+                "color": {"field": "運限", "type": "nominal", "legend": None},
+                "tooltip": [{"field": key, "type": "nominal"} for key in ("運限", "區段", "開始", "結束")],
+            },
+        }, width="stretch")
+    _timing_panel(periods, query, years)
 
 
 def main():
@@ -582,7 +773,7 @@ def main():
     )
     st.title("命盤計算器", anchor=False)
     if "report" not in st.session_state:
-        st.write("一次輸入出生資料，查看紫微斗數、八字與西洋本命盤。")
+        st.write("一次輸入出生資料，比對六種命盤與運限時間軸。")
         with st.container(border=True):
             _birth_form()
         return
@@ -599,13 +790,13 @@ def main():
     if "navigation_error" in st.session_state:
         st.warning("查詢時間未更新，仍顯示上次結果。原因：" + st.session_state["navigation_error"])
     if not charts:
-        st.error("三種命盤皆無法計算。請查看各分頁的原因，再重新排盤。")
+        st.error("目前沒有可用的命盤。請查看各分頁的原因，再重新排盤。")
     elif errors:
         st.warning("部分命盤無法計算：" + "、".join(SYSTEMS[name] for name in SYSTEMS if name in errors))
     flow_years = DEFAULT_FLOW_YEARS
-    if "ziwei" in charts or "bazi" in charts:
+    if charts:
         with st.expander("多年瀏覽與 JSON 匯出範圍"):
-            st.caption("紫微瀏覽與兩種命盤的 JSON 共用年數。匯出以畫面目前的查詢時間為基準。")
+            st.caption("紫微瀏覽、運限時間軸和 JSON 都以目前查詢時間及下列年數為基準。")
             past, future = st.columns(2)
             flow_years = (
                 past.number_input(
@@ -629,29 +820,48 @@ def main():
             partial(
                 export_report_json, tuple(charts.values()), errors=errors,
                 ziwei_years=flow_years, bazi_years=flow_years,
+                query_datetime=query, timing_years=flow_years,
             ),
             file_name=f"destiny-report-{query.date().isoformat()}.json",
             mime="application/json",
             key="report_json",
             on_click="ignore",
         )
-    tabs = st.tabs(list(SYSTEMS.values()), key="chart_tabs", on_change="rerun")
+    timing, timing_error = None, None
+    if "western" in charts:
+        try:
+            _, horizon = timing_bounds(query, flow_years)
+            timing = calculate_western_timing(charts["western"], through=horizon)
+        except ValueError as error:
+            timing_error = str(error)
+
+    tabs = st.tabs([*SYSTEMS.values(), "運限時間軸"], key="chart_tabs", on_change="rerun")
     renderers = (
         ("ziwei", partial(_ziwei, json_years=flow_years)),
         ("bazi", partial(_bazi, json_years=flow_years)),
-        ("western", _western),
+        ("western", partial(_western, query=query, years=flow_years, timing=timing, timing_error=timing_error)),
+        ("jyotish", partial(_jyotish, query=query, years=flow_years)),
+        ("qizheng", partial(_qizheng, query=query, years=flow_years)),
+        ("heluo", partial(_heluo, query=query, years=flow_years)),
     )
     for tab, (name, render) in zip(tabs, renderers):
         with tab:
             if name in charts:
                 render(charts[name])
             else:
-                st.warning(f"{SYSTEMS[name]}無法計算。原因：{errors[name]}")
+                st.warning(f"{SYSTEMS[name]}無法計算。原因：{errors.get(name, '請重新排盤。')}")
+    with tabs[-1]:
+        periods = tuple(p for name in ("jyotish", "qizheng", "heluo") if name in charts for p in charts[name].periods)
+        _timeline(birth, query, flow_years, periods + timing.periods if timing else periods)
     with st.expander("計算規則與資料來源"):
         for name, label in SYSTEMS.items():
             if name in charts:
                 chart = charts[name]
-                st.write(f"{label}｜引擎 {chart.engine_version}｜規則 {chart.rules_version}")
+                engine = getattr(chart, "engine_version", None)
+                rules = chart.rules_version if hasattr(chart, "rules_version") else chart.rule_version
+                st.write(f"{label}｜" + (f"引擎 {engine}｜" if engine else "") + f"規則 {rules}")
+        if timing:
+            st.write(f"西洋時間主星｜規則 {timing.rule_version}")
         st.caption(
             "八字以立春及十二節切換年月；紫微以農曆年月及閏月規則切換。出生採民用時間，未校正真太陽時。城市資料：GeoNames，CC BY 4.0；內建城市為代表座標，可改用手動地點。"
         )

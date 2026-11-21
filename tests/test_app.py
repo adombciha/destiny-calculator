@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 from unittest.mock import patch
 
-from destiny_calculator import BirthData, calculate_bazi, calculate_ziwei, get_city
+from destiny_calculator import BirthData, BirthPlace, calculate_bazi, calculate_ziwei, get_city
 
 
 HAS_UI = importlib.util.find_spec("streamlit") is not None
@@ -14,7 +14,7 @@ HAS_WESTERN = (
 )
 if HAS_UI:
     from streamlit.testing.v1 import AppTest
-    from app import adjacent_month_query
+    from app import _set_timeline_day, adjacent_month_query
 
 
 @unittest.skipUnless(HAS_UI, "Install the ui extra to run interface tests.")
@@ -177,12 +177,41 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("report", second.session_state)
         self.assertIn("report", first.session_state)
 
+    def test_timeline_birth_day_clamps_to_birth_and_keeps_a_current_fold(self):
+        birth = BirthData(
+            datetime(2024, 11, 3, 1, 30), BirthPlace("New York", 40.7, -74, "America/New_York"),
+            "female", fold=0,
+        )
+        for query, expected in (
+            (birth.resolve_query_time(datetime(2025, 1, 1)), birth.resolved_datetime),
+            (birth.resolve_query_time(birth.local_datetime, fold=1), birth.resolve_query_time(birth.local_datetime, fold=1)),
+        ):
+            with (
+                self.subTest(expected=expected.isoformat()),
+                patch("app.st.session_state", {"day": birth.local_datetime.date()}),
+                patch("app._set_query") as update,
+            ):
+                _set_timeline_day(birth, query, "day")
+                actual_birth, actual_query = update.call_args.args
+                self.assertEqual(actual_birth, birth)
+                self.assertEqual(actual_query.astimezone(UTC), expected.astimezone(UTC))
+
     @unittest.skipUnless(HAS_WESTERN, "Install western dependencies and ephemeris.")
-    def test_three_charts_and_western_natal_stays_fixed_on_month_navigation(self):
+    def test_six_charts_and_western_natal_stays_fixed_on_month_navigation(self):
         app = self.submit(self.new_app())
-        self.assertEqual(set(app.session_state["report"][2]), {"bazi", "ziwei", "western"})
+        self.assertEqual(set(app.session_state["report"][2]), {"bazi", "ziwei", "western", "jyotish", "qizheng", "heluo"})
         natal = app.session_state["report"][2]["western"]
+        self.assertTrue(app.tabs[-1].get("vega_lite_chart"))
+        for label in ("西洋占星", "印度占星", "七政四餘", "河洛理數"):
+            self.assertTrue(next(tab for tab in app.tabs if tab.label == label).get("download_button"))
         app.button(key="bazi_next").click().run()
+        self.assertEqual(app.session_state["report"][2]["western"], natal)
+        self.assertFalse(app.exception)
+        query = app.session_state["report"][1]
+        picked = date(query.year - 1, 4, 15)
+        app.date_input(key=f"timing_day_{query.date().isoformat()}").set_value(picked)
+        next(b for b in app.button if b.label == "查看當日運限").click().run()
+        self.assertEqual(app.session_state["report"][1].date(), picked)
         self.assertEqual(app.session_state["report"][2]["western"], natal)
         self.assertFalse(app.exception)
 
@@ -192,7 +221,7 @@ class AppTests(unittest.TestCase):
             side_effect=ValueError("missing ephemeris"),
         ):
             app = self.submit(self.new_app())
-        self.assertEqual(set(app.session_state["report"][2]), {"bazi", "ziwei"})
-        self.assertIn("western", app.session_state["report"][3])
+        self.assertEqual(set(app.session_state["report"][2]), {"bazi", "ziwei", "heluo"})
+        self.assertEqual(set(app.session_state["report"][3]), {"western", "jyotish", "qizheng"})
         self.assertTrue(app.warning)
         self.assertFalse(app.exception)
