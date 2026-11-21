@@ -25,7 +25,7 @@ class ChartTests(unittest.TestCase):
 
     def test_fixed_palace_positions_and_all_stars_are_preserved(self):
         root = ET.fromstring(render_ziwei_svg(self.ziwei))
-        groups = root.findall("s:g", NS)
+        groups = root.findall("s:g[@data-palace-index]", NS)
         self.assertEqual(len(groups), 12)
         top_branches = [
             g.attrib["data-branch"] for g in groups if g.find("s:rect", NS).attrib["y"] == "76"
@@ -75,6 +75,74 @@ class ChartTests(unittest.TestCase):
             for star in (*p.major_stars, *p.minor_stars, *p.adjective_stars):
                 if star.mutagen:
                     self.assertIn("本" + star.mutagen, text)
+
+    def test_ziwei_transformation_table_is_independent_of_overlays(self):
+        birth = BirthData(datetime.fromisoformat("1972-08-16 04:00"), self.birth.place, "female")
+        chart = calculate_ziwei(birth, datetime.fromisoformat("1983-10-28 12:00"))
+        all_layers = ("natal", "decadal", "yearly", "monthly")
+        expected = [
+            ["層次", "祿", "權", "科", "忌"],
+            ["本命", "天梁", "紫微", "左輔", "武曲"],
+            ["大限", "天機", "天梁", "紫微", "太陰"],
+            ["流年", "破軍", "巨門", "太陰", "貪狼"],
+            ["流月", "天梁", "紫微", "左輔", "武曲"],
+        ]
+        for layers in (("natal",), ("natal", "yearly"), all_layers):
+            with self.subTest(layers=layers):
+                root = ET.fromstring(render_ziwei_svg(chart, layers=layers))
+                table = root.find('.//s:g[@data-section="transformations"]', NS)
+                self.assertEqual(
+                    [[cell.text for cell in row.findall("s:text", NS)] for row in table],
+                    expected,
+                )
+                summary = root.find('s:g[@data-section="summary"]', NS)
+                text = [node.text for node in summary.findall("s:text", NS)]
+                self.assertIn("查詢：1983-10-28 12:00:00+08:00", text)
+                ziwei = root.find('.//s:text[@data-star="紫微"]', NS).text
+                self.assertIn("本權", ziwei)
+                self.assertEqual("限科" in ziwei, "decadal" in layers)
+                for layer in all_layers[1:]:
+                    self.assertEqual(
+                        len(root.findall(f'.//s:text[@data-layer="{layer}"]', NS)),
+                        12 if layer in layers else 0,
+                    )
+                for layer, label, period in (
+                    ("yearly", "農曆流年", chart.flow_year),
+                    ("monthly", "農曆流月", chart.flow_month),
+                ):
+                    self.assertEqual(f"{label}：{period.gan_zhi}" in text, layer in layers)
+                    if layer in layers:
+                        self.assertIn(period.starts_at.isoformat(sep=" "), text)
+                        self.assertIn(f"至 {period.ends_at.isoformat(sep=' ')}（不含）", text)
+        childhood = calculate_ziwei(birth, birth.local_datetime)
+        child_svg = ET.fromstring(render_ziwei_svg(childhood))
+        table = child_svg.find('.//s:g[@data-section="transformations"]', NS)
+        self.assertEqual(
+            [cell.text for cell in table[2].findall("s:text", NS)],
+            ["童限", "天同", "天機", "文昌", "廉貞"],
+        )
+
+    def test_ziwei_summary_and_table_fit_with_long_location(self):
+        birth = replace(self.birth, place=replace(self.birth.place, name="臺" * 50 + "9" * 50))
+        chart = replace(self.ziwei, birth=birth)
+        root = ET.fromstring(
+            render_ziwei_svg(chart, layers=("natal", "decadal", "yearly", "monthly"))
+        )
+        palace = root.find("s:g[@data-palace-index]/s:rect", NS)
+        width, height = (int(palace.attrib[key]) for key in ("width", "height"))
+        top = 76 + height
+        summary = root.find('s:g[@data-section="summary"]', NS)
+        for text in summary.findall(".//s:text", NS):
+            self.assertGreater(float(text.attrib["x"]), width)
+            self.assertLess(float(text.attrib["x"]), 3 * width)
+            self.assertGreater(float(text.attrib["y"]), top)
+            self.assertLess(float(text.attrib["y"]), top + 2 * height)
+        for rect in summary.findall(".//s:rect", NS):
+            x, y, w, h = (int(rect.attrib[key]) for key in ("x", "y", "width", "height"))
+            self.assertGreater(x, width)
+            self.assertLess(x + w, 3 * width)
+            self.assertGreater(y, top)
+            self.assertLess(y + h, top + 2 * height)
 
     def test_text_is_escaped_and_invalid_xml_characters_are_rejected(self):
         birth = replace(self.birth, place=replace(self.birth.place, name='A&B <測試> "地點"'))

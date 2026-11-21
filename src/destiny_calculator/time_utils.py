@@ -1,7 +1,11 @@
 """Resolve local civil time without silently changing ambiguous input."""
 
+from calendar import monthrange
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+DEFAULT_FLOW_YEARS = (0, 5)
+MAX_FLOW_YEARS = 200
 
 
 class AmbiguousTimeError(ValueError):
@@ -19,6 +23,14 @@ def get_timezone(name: str) -> ZoneInfo:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as error:
         raise ValueError(f"Unknown or unavailable IANA time zone: {name}") from error
+
+
+def shift_local_years(instant: datetime, years: int) -> datetime:
+    if years == 0:
+        return instant
+    year = instant.year + years
+    day = min(instant.day, monthrange(year, instant.month)[1])
+    return instant.replace(year=year, day=day, fold=0).astimezone(UTC).astimezone(instant.tzinfo)
 
 
 def resolve_local_time(

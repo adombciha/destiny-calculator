@@ -26,8 +26,10 @@ from destiny_calculator import (
     render_western_svg,
     resolve_local_time,
 )
+from destiny_calculator.charts import ziwei_transformation_rows
+from destiny_calculator.time_utils import DEFAULT_FLOW_YEARS, MAX_FLOW_YEARS
 from destiny_calculator.western import WesternChart, format_zodiac
-from destiny_calculator.ziwei import DEFAULT_FLOW_YEARS, MAX_FLOW_YEARS
+from destiny_calculator.ziwei import _browse_months, _browse_years
 
 
 FOLDS = {"自動判定（重複時間需另選）": None, "第一次": 0, "第二次": 1}
@@ -78,10 +80,18 @@ def adjacent_month_query(chart, direction):
         return None
 
 
-def _set_query(birth, query=None):
+def _reset_ziwei_browse(chart):
+    st.session_state["ziwei_browse_anchor"] = chart
+    st.session_state.pop("ziwei_browse_year", None)
+    st.session_state.pop("ziwei_browse_period", None)
+
+
+def _set_query(birth, query=None, *, ziwei_mode=None):
     try:
         resolved = birth.resolve_query_time() if query is None else query
         charts, errors = calculate_results(birth, resolved)
+        if ziwei_mode is not None and "ziwei" not in charts:
+            raise ValueError(errors["ziwei"])
         if not charts and errors:
             raise ValueError("；".join(f"{SYSTEMS[name]}：{error}" for name, error in errors.items()))
         st.session_state["report"] = (birth, resolved, charts, errors)
@@ -89,6 +99,10 @@ def _set_query(birth, query=None):
         st.session_state["query_time"] = resolved.timetz().replace(tzinfo=None)
         st.session_state["query_fold"] = "第二次" if resolved.fold else "第一次"
         st.session_state["use_now"] = query is None
+        if query is None:
+            _reset_ziwei_browse(charts.get("ziwei"))
+        if ziwei_mode is not None:
+            st.session_state["ziwei_mode"] = ziwei_mode
         st.session_state.pop("navigation_error", None)
     except ValueError as error:
         st.session_state["navigation_error"] = str(error)
@@ -229,10 +243,12 @@ def _submit_birth():
             query = birth.resolve_query_time(local, fold=FOLDS[state.query_fold])
         charts, errors = calculate_results(birth, query)
         state["report"] = (birth, query, charts, errors)
+        _reset_ziwei_browse(charts.get("ziwei"))
         state.pop("navigation_error", None)
         state.pop("input_error", None)
     except ValueError as error:
         state.pop("report", None)
+        _reset_ziwei_browse(None)
         state.pop("navigation_error", None)
         message = (
             "地點設定無效：" + str(error)
@@ -298,7 +314,7 @@ def _chart_preview(chart, renderer, name, alt, *, json_years=None, **options):
             "下載此盤完整 JSON",
             export_chart_json(chart)
             if json_years is None
-            else partial(export_chart_json, chart, ziwei_years=json_years),
+            else partial(export_chart_json, chart, ziwei_years=json_years, bazi_years=json_years),
             file_name=f"{name}-{suffix}.json",
             mime="application/json",
             key=name + "_json",
@@ -306,7 +322,7 @@ def _chart_preview(chart, renderer, name, alt, *, json_years=None, **options):
         )
 
 
-def _bazi(chart):
+def _bazi(chart, json_years):
     pillars = (("年柱", chart.year), ("月柱", chart.month), ("日柱", chart.day), ("時柱", chart.hour))
     with st.container(horizontal=True):
         for label, pillar in pillars:
@@ -323,7 +339,9 @@ def _bazi(chart):
     st.caption(
         f"節氣流月 {chart.flow_month.pillar.gan_zhi}：{_format(chart.flow_month.starts_at)} 至 {_format(chart.flow_month.ends_at)}（不含）"
     )
-    _chart_preview(chart, render_bazi_svg, "bazi", "八字四柱、大運及節氣流年流月命盤")
+    _chart_preview(
+        chart, render_bazi_svg, "bazi", "八字四柱、大運及節氣流年流月命盤", json_years=json_years,
+    )
     with st.expander("四柱與大運完整資料"):
         st.subheader("四柱", anchor=False)
         st.dataframe(
@@ -356,10 +374,62 @@ def _bazi(chart):
         )
 
 
+def _ziwei_browser(chart, years):
+    with st.expander("紫微多年流年流月瀏覽", key="ziwei_browse_open", on_change="rerun") as panel:
+        if not panel.open:
+            return
+        state = st.session_state
+        anchor = state.get("ziwei_browse_anchor") or chart
+        state["ziwei_browse_anchor"] = anchor
+        st.caption(f"瀏覽基準 {_format(anchor.query_datetime)}。下載範圍以畫面目前的查詢時間起算。")
+        year_ranges = {year: (start, end) for year, start, end in _browse_years(anchor, years)}
+        if not year_ranges:
+            st.info("這個範圍沒有可瀏覽的農曆期間。")
+            return
+        if state.get("ziwei_browse_year") not in year_ranges:
+            state.pop("ziwei_browse_year", None)
+        current = chart.query_datetime.astimezone(UTC)
+        default_year = next(
+            (
+                year for year, (start, end) in year_ranges.items()
+                if start.astimezone(UTC) <= current < end.astimezone(UTC)
+            ),
+            min(year_ranges),
+        )
+        year = st.number_input(
+            "農曆年",
+            min_value=min(year_ranges),
+            max_value=max(year_ranges),
+            value=default_year,
+            key="ziwei_browse_year",
+            on_change=state.pop,
+            args=("ziwei_browse_period", None),
+        )
+        periods = {"流年": year_ranges[year]}
+        periods.update({label: (start, end) for label, start, end in _browse_months(*year_ranges[year])})
+        if state.get("ziwei_browse_period") not in periods:
+            state.pop("ziwei_browse_period", None)
+        selected = st.radio("流年或農曆月", tuple(periods), horizontal=True, key="ziwei_browse_period")
+        start, end = periods[selected]
+        if years == (0, 0):
+            st.caption(f"當期查詢 {_format(anchor.query_datetime)}")
+            query = anchor.query_datetime
+        else:
+            st.caption(f"有效期間 {_format(start)} 至 {_format(end)}（不含）")
+            query = chart.query_datetime if start.astimezone(UTC) <= current < end.astimezone(UTC) else start
+        if st.button("查看命盤", key="ziwei_browse_view"):
+            mode = "流年" if selected == "流年" else "流月"
+            # Apply the selection before the next run creates the query widgets.
+            state["ziwei_browse_request"] = (chart.birth, query, mode)
+            st.rerun()
+
+
 def _ziwei(chart, json_years):
     _navigation(chart, "ziwei")
+    _ziwei_browser(chart, json_years)
     columns = st.columns((3, 2))
-    mode = columns[0].radio("命盤層次", list(MODES), index=3, horizontal=True, key="ziwei_mode")
+    st.session_state.setdefault("ziwei_mode", "流月")
+    mode = columns[0].radio("命盤層次", list(MODES), horizontal=True, key="ziwei_mode")
     extra = columns[1].checkbox("同時顯示大限", key="show_decadal", disabled=mode == "大限")
     layers = MODES[mode]
     if extra and "decadal" not in layers:
@@ -371,6 +441,13 @@ def _ziwei(chart, json_years):
         f"農曆流月 {chart.flow_month.gan_zhi}：{_format(chart.flow_month.starts_at)} 至 {_format(chart.flow_month.ends_at)}（不含）"
     )
     st.caption(f"查詢農曆日期：{chart.query_lunar_date}。閏月前後段分開查詢。")
+    with st.expander("四化總表（文字）"):
+        st.table(
+            [
+                dict(zip(("層次", "祿", "權", "科", "忌"), (label, *stars)))
+                for label, stars in ziwei_transformation_rows(chart)
+            ]
+        )
     _chart_preview(
         chart,
         render_ziwei_svg,
@@ -493,6 +570,10 @@ def _western(chart):
 
 def main():
     st.set_page_config(page_title="命盤計算器", layout="wide")
+    browse_request = st.session_state.pop("ziwei_browse_request", None)
+    if browse_request is not None:
+        birth, query, mode = browse_request
+        _set_query(birth, query, ziwei_mode=mode)
     # Download links from the previous report stay mounted while Streamlit reruns.
     st.html(
         '<style>[data-testid="stApp"]:is([data-test-script-state="running"],'
@@ -521,12 +602,12 @@ def main():
         st.error("三種命盤皆無法計算。請查看各分頁的原因，再重新排盤。")
     elif errors:
         st.warning("部分命盤無法計算：" + "、".join(SYSTEMS[name] for name in SYSTEMS if name in errors))
-    ziwei_years = DEFAULT_FLOW_YEARS
-    if "ziwei" in charts:
-        with st.expander("紫微 JSON 匯出範圍"):
-            st.caption("以本次查詢時間為基準。紫微單盤與合併 JSON 使用相同範圍。")
+    flow_years = DEFAULT_FLOW_YEARS
+    if "ziwei" in charts or "bazi" in charts:
+        with st.expander("多年瀏覽與 JSON 匯出範圍"):
+            st.caption("紫微瀏覽與兩種命盤的 JSON 共用年數。匯出以畫面目前的查詢時間為基準。")
             past, future = st.columns(2)
-            ziwei_years = (
+            flow_years = (
                 past.number_input(
                     "回溯年數",
                     min_value=0,
@@ -545,7 +626,10 @@ def main():
     if charts:
         st.download_button(
             "下載合併 JSON 報告" if not errors else "下載合併 JSON 報告（部分結果）",
-            partial(export_report_json, tuple(charts.values()), errors=errors, ziwei_years=ziwei_years),
+            partial(
+                export_report_json, tuple(charts.values()), errors=errors,
+                ziwei_years=flow_years, bazi_years=flow_years,
+            ),
             file_name=f"destiny-report-{query.date().isoformat()}.json",
             mime="application/json",
             key="report_json",
@@ -553,8 +637,8 @@ def main():
         )
     tabs = st.tabs(list(SYSTEMS.values()), key="chart_tabs", on_change="rerun")
     renderers = (
-        ("ziwei", partial(_ziwei, json_years=ziwei_years)),
-        ("bazi", _bazi),
+        ("ziwei", partial(_ziwei, json_years=flow_years)),
+        ("bazi", partial(_bazi, json_years=flow_years)),
         ("western", _western),
     )
     for tab, (name, render) in zip(tabs, renderers):

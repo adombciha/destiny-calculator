@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from importlib.metadata import version
 
-from lunar_python import Solar
+from lunar_python import Lunar, Solar
 from lunar_python.util import LunarUtil
 
 from .models import BirthData
-
+from .time_utils import MAX_FLOW_YEARS, shift_local_years
 
 CALENDAR_TIMEZONE = timezone(timedelta(hours=8))
 TRADITIONAL = str.maketrans({"财": "財", "伤": "傷", "杀": "殺"})
@@ -81,6 +81,72 @@ def _li_chun(year: int) -> Solar:
     return Solar.fromYmd(year, 7, 1).getLunar().getJieQiTable()["立春"]
 
 
+def _flow_year(query: datetime, lunar: Lunar, day_stem: str) -> BaziPeriod:
+    year = lunar.getSolar().getYear()
+    spring = _calendar_datetime(_li_chun(year))
+    if query.astimezone(UTC) < spring.astimezone(UTC):
+        start, end = _calendar_datetime(_li_chun(year - 1)), spring
+    else:
+        start, end = spring, _calendar_datetime(_li_chun(year + 1))
+    return BaziPeriod(
+        _pillar(lunar.getEightChar().getYear(), day_stem),
+        start.astimezone(query.tzinfo), end.astimezone(query.tzinfo),
+    )
+
+
+def _flow_month(query: datetime, lunar: Lunar, day_stem: str) -> BaziPeriod:
+    return BaziPeriod(
+        _pillar(lunar.getEightChar().getMonth(), day_stem),
+        _calendar_datetime(lunar.getPrevJie().getSolar()).astimezone(query.tzinfo),
+        _calendar_datetime(lunar.getNextJie().getSolar()).astimezone(query.tzinfo),
+    )
+
+
+def _flow_forecast(
+    chart: BaziChart, years: tuple[int, int]
+) -> dict[str, datetime | list[BaziPeriod]]:
+    if not isinstance(years, (tuple, list)) or len(years) != 2 or any(
+        type(value) is not int or not 0 <= value <= MAX_FLOW_YEARS for value in years
+    ):
+        raise ValueError(f"BaZi forecast needs two whole year counts between 0 and {MAX_FLOW_YEARS}.")
+    before, after = years
+    query = chart.query_datetime
+    zone = query.tzinfo
+    requested_start = shift_local_years(query, -before)
+    requested_end = shift_local_years(query, after)
+    start = max(requested_start.astimezone(UTC), chart.birth.utc_datetime)
+    end = min(requested_end.astimezone(UTC), datetime(2100, 1, 1, tzinfo=zone).astimezone(UTC))
+    annual, monthly, luck = [], [], []
+    if start < end:
+        luck = [
+            period for period in chart.luck_periods
+            if period.starts_at.astimezone(UTC) < end and period.ends_at.astimezone(UTC) > start
+        ]
+        day_stem = chart.day.gan_zhi[0]
+        cursor = start
+        while cursor < end:
+            local_cursor = cursor.astimezone(zone)
+            lunar = _solar(cursor.astimezone(CALENDAR_TIMEZONE)).getLunar()
+            if not annual or annual[-1].ends_at.astimezone(UTC) <= cursor:
+                annual.append(_flow_year(local_cursor, lunar, day_stem))
+            month = _flow_month(local_cursor, lunar, day_stem)
+            monthly.append(month)
+            next_cursor = month.ends_at.astimezone(UTC)
+            if next_cursor <= cursor:
+                raise ValueError("BaZi forecast did not advance to the next solar term.")
+            cursor = next_cursor
+
+    return {
+        "requested_starts_at": requested_start,
+        "requested_ends_at": requested_end,
+        "starts_at": start.astimezone(zone),
+        "ends_at": end.astimezone(zone),
+        "years": annual,
+        "months": monthly,
+        "luck_periods": luck,
+    }
+
+
 def calculate_bazi(
     birth: BirthData,
     query_datetime: datetime | None = None,
@@ -118,17 +184,7 @@ def calculate_bazi(
         None,
     )
 
-    calendar_query = query.astimezone(CALENDAR_TIMEZONE)
-    query_lunar = _solar(calendar_query).getLunar()
-    query_eight = query_lunar.getEightChar()
-    spring = _li_chun(calendar_query.year)
-    flow_year_number = calendar_query.year
-    if query_utc < _calendar_datetime(spring).astimezone(UTC):
-        flow_year_number -= 1
-    year_start = _calendar_datetime(_li_chun(flow_year_number)).astimezone(zone)
-    year_end = _calendar_datetime(_li_chun(flow_year_number + 1)).astimezone(zone)
-    month_start = _calendar_datetime(query_lunar.getPrevJie().getSolar()).astimezone(zone)
-    month_end = _calendar_datetime(query_lunar.getNextJie().getSolar()).astimezone(zone)
+    query_lunar = _solar(query.astimezone(CALENDAR_TIMEZONE)).getLunar()
 
     return BaziChart(
         birth=birth,
@@ -144,7 +200,7 @@ def calculate_bazi(
         luck_periods=tuple(luck_periods),
         query_datetime=query,
         current_luck=current_luck,
-        flow_year=BaziPeriod(_pillar(query_eight.getYear(), day_stem), year_start, year_end),
-        flow_month=BaziPeriod(_pillar(query_eight.getMonth(), day_stem), month_start, month_end),
+        flow_year=_flow_year(query, query_lunar, day_stem),
+        flow_month=_flow_month(query, query_lunar, day_stem),
         engine_version=version("lunar-python"),
     )

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from destiny_calculator import (
     BirthData,
+    BirthPlace,
     calculate_bazi,
     calculate_ziwei,
     export_chart_json,
@@ -28,7 +29,15 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(report["birth"]["utc_datetime"], "2000-08-15T20:00:00+00:00")
         self.assertEqual(report["birth"]["place"]["timezone"], "Asia/Taipei")
         self.assertEqual(report["query_datetime"], "2026-10-28T12:00:00+08:00")
-        self.assertEqual(report["results"]["bazi"]["data"]["rules_version"], "bazi-v1")
+        bazi = report["results"]["bazi"]["data"]
+        self.assertEqual(bazi["rules_version"], "bazi-v1")
+        forecast = bazi["flow_forecast"]
+        self.assertEqual(forecast["starts_at"], report["query_datetime"])
+        self.assertEqual(forecast["ends_at"], "2031-10-28T12:00:00+08:00")
+        for periods, current in (
+            ("years", "flow_year"), ("months", "flow_month"), ("luck_periods", "current_luck"),
+        ):
+            self.assertEqual(forecast[periods][0], bazi[current])
         ziwei = report["results"]["ziwei"]["data"]
         self.assertEqual(len(ziwei["palaces"]), 12)
         self.assertEqual(len(ziwei["flow_month"]["mutagens"]), 4)
@@ -46,6 +55,82 @@ class ExportTests(unittest.TestCase):
         )
         self.assertEqual(report["results"]["western"]["status"], "not_requested")
         self.assertEqual(raw, export_report_json((self.bazi, self.ziwei), generated_at=stamp))
+
+    def test_bazi_custom_range_matches_both_export_apis(self):
+        single = json.loads(export_chart_json(self.bazi, bazi_years=(2, 1)))
+        combined = json.loads(
+            export_report_json((self.ziwei, self.bazi), ziwei_years=(0, 0), bazi_years=(2, 1))
+        )
+        forecast = single["results"]["bazi"]["data"]["flow_forecast"]
+        self.assertEqual(forecast, combined["results"]["bazi"]["data"]["flow_forecast"])
+        self.assertEqual(forecast["starts_at"], "2024-10-28T12:00:00+08:00")
+        self.assertEqual(forecast["ends_at"], "2027-10-28T12:00:00+08:00")
+        self.assertEqual(combined["results"]["ziwei"]["data"]["flow_forecast"]["years"], [])
+        for key in ("years", "months"):
+            periods = forecast[key]
+            self.assertEqual(
+                [period["ends_at"] for period in periods[:-1]],
+                [period["starts_at"] for period in periods[1:]],
+            )
+            self.assertLess(periods[0]["starts_at"], forecast["starts_at"])
+            self.assertGreater(periods[-1]["ends_at"], forecast["ends_at"])
+
+    def test_bazi_solar_and_luck_transitions_are_half_open(self):
+        for query, layers, before_pillars, after_pillars in (
+            (datetime(2026, 2, 4, 4, 2, 8), ("years", "months"), ("乙巳", "己丑"), ("丙午", "庚寅")),
+            (datetime(2023, 7, 1), ("luck_periods",), ("壬午",), ("辛巳",)),
+        ):
+            with self.subTest(query=query):
+                chart = calculate_bazi(self.birth, query)
+                earlier = json.loads(export_chart_json(chart, bazi_years=(1, 0)))
+                later = json.loads(export_chart_json(chart, bazi_years=(0, 1)))
+                before = earlier["results"]["bazi"]["data"]["flow_forecast"]
+                after = later["results"]["bazi"]["data"]["flow_forecast"]
+                instant = chart.query_datetime.isoformat()
+                for layer, from_pillar, to_pillar in zip(layers, before_pillars, after_pillars):
+                    first, second = before[layer][-1], after[layer][0]
+                    self.assertEqual(first["ends_at"], instant)
+                    self.assertEqual(second["starts_at"], instant)
+                    self.assertEqual(first["pillar"]["gan_zhi"], from_pillar)
+                    self.assertEqual(second["pillar"]["gan_zhi"], to_pillar)
+
+    def test_bazi_range_reports_birth_calendar_and_fold_limits(self):
+        birth = BirthData(datetime(2099, 4, 1, 12), self.birth.place, "female")
+        chart = calculate_bazi(birth, datetime(2099, 12, 31, 12))
+        report = json.loads(export_chart_json(chart, bazi_years=(1, 5)))
+        forecast = report["results"]["bazi"]["data"]["flow_forecast"]
+        self.assertEqual(forecast["requested_starts_at"], "2098-12-31T12:00:00+08:00")
+        self.assertEqual(forecast["requested_ends_at"], "2104-12-31T12:00:00+08:00")
+        self.assertEqual(forecast["starts_at"], birth.resolved_datetime.isoformat())
+        self.assertEqual(forecast["ends_at"], "2100-01-01T00:00:00+08:00")
+        self.assertLess(forecast["months"][0]["starts_at"], forecast["starts_at"])
+        self.assertGreater(forecast["months"][-1]["ends_at"], forecast["ends_at"])
+
+        local = datetime(2024, 11, 3, 1, 30)
+        place = BirthPlace("New York", 40.7, -74, "America/New_York")
+        birth = BirthData(local, place, "female", fold=0)
+        chart = calculate_bazi(birth, local, fold=1)
+        report = json.loads(export_chart_json(chart, bazi_years=(1, 0)))
+        forecast = report["results"]["bazi"]["data"]["flow_forecast"]
+        self.assertEqual(forecast["starts_at"], "2024-11-03T01:30:00-04:00")
+        self.assertEqual(forecast["ends_at"], "2024-11-03T01:30:00-05:00")
+        self.assertEqual(len(forecast["years"]), 1)
+        self.assertEqual(len(forecast["months"]), 1)
+        self.assertEqual(forecast["luck_periods"], [])
+
+    def test_bazi_zero_years_keeps_current_periods(self):
+        report = json.loads(export_chart_json(self.bazi, bazi_years=(0, 0)))
+        data = report["results"]["bazi"]["data"]
+        forecast = data["flow_forecast"]
+        self.assertEqual(forecast["starts_at"], forecast["ends_at"])
+        self.assertEqual(data["flow_year"]["pillar"]["gan_zhi"], "丙午")
+        self.assertEqual(data["flow_month"]["pillar"]["gan_zhi"], "戊戌")
+        self.assertEqual(data["current_luck"]["pillar"]["gan_zhi"], "辛巳")
+        for key in ("years", "months", "luck_periods"):
+            self.assertEqual(forecast[key], [])
+        for years in ((-1, 0), (0, 201), (True, 0), (0,), None):
+            with self.subTest(years=years), self.assertRaises(ValueError):
+                export_chart_json(self.bazi, bazi_years=years)
 
     def test_ziwei_custom_range_keeps_both_leap_month_segments(self):
         single = json.loads(export_chart_json(self.ziwei, ziwei_years=(2, 5)))

@@ -93,6 +93,48 @@ class AppTests(unittest.TestCase):
         self.assertIn("ziwei", app.session_state["report"][3])
         self.assertTrue(app.warning)
         self.assertFalse(app.exception)
+        self.assertEqual(app.number_input(key="ziwei_years_before").value, 0)
+        self.assertEqual(app.number_input(key="ziwei_years_after").value, 5)
+
+    def test_ziwei_browse_keeps_its_anchor_when_switching_leap_month_segments(self):
+        app = self.new_app()
+        app.checkbox(key="use_now").uncheck().run()
+        app.date_input(key="query_date").set_value(date(2023, 3, 25))
+        app.time_input(key="query_time").set_value(time(12, 34, 56))
+        self.submit(app)
+        original = app.session_state["report"][1]
+        app.session_state["ziwei_browse_open"] = True
+        app.run()
+        self.assertEqual(app.number_input(key="ziwei_browse_year").value, 2023)
+
+        app.radio(key="ziwei_browse_period").set_value("閏二月（後半）").run()
+        self.assertEqual(app.session_state["report"][1], original)
+        app.button(key="ziwei_browse_view").click().run()
+        _, query, charts, _ = app.session_state["report"]
+        self.assertEqual(query.isoformat(), "2023-04-06T00:00:00+08:00")
+        self.assertEqual(charts["ziwei"].query_datetime, charts["bazi"].query_datetime)
+        self.assertEqual(app.radio(key="ziwei_mode").value, "流月")
+        self.assertEqual(app.session_state["ziwei_browse_anchor"].query_datetime, original)
+
+        app.radio(key="ziwei_browse_period").set_value("閏二月（前半）")
+        app.button(key="ziwei_browse_view").click().run()
+        self.assertEqual(app.session_state["report"][1], original)
+        app.number_input(key="ziwei_browse_year").set_value(2024).run()
+        self.assertEqual(app.radio(key="ziwei_browse_period").value, "流年")
+        self.assertFalse(app.exception)
+
+    def test_ziwei_browse_failure_keeps_the_previous_report(self):
+        app = self.submit(self.new_app())
+        report = app.session_state["report"]
+        app.session_state["ziwei_browse_open"] = True
+        app.run()
+        later_year = app.number_input(key="ziwei_browse_year").value + 1
+        app.number_input(key="ziwei_browse_year").set_value(later_year).run()
+        with patch("destiny_calculator.calculate_ziwei", side_effect=ValueError("Ziwei unavailable")):
+            app.button(key="ziwei_browse_view").click().run()
+        self.assertEqual(app.session_state["report"], report)
+        self.assertTrue(any("Ziwei unavailable" in warning.value for warning in app.warning))
+        self.assertFalse(app.exception)
 
     def test_manual_place_requires_explicit_dst_fold(self):
         app = self.new_app()

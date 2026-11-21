@@ -13,6 +13,7 @@ from destiny_calculator import (
     calculate_ziwei,
     get_city,
 )
+from destiny_calculator.ziwei import _browse_months, _browse_years
 
 
 class ZiweiTests(unittest.TestCase):
@@ -116,6 +117,49 @@ class ZiweiTests(unittest.TestCase):
         self.assertEqual(first.flow_month.starts_at.isoformat(), "2025-07-25T00:00:00+08:00")
         self.assertEqual(before.flow_month.ends_at, after.flow_month.starts_at)
         self.assertEqual(after.flow_month.ends_at, next_month.flow_month.starts_at)
+
+    def test_browse_years_and_months_clip_the_range_and_split_leap_month(self):
+        chart = calculate_ziwei(self.birth, datetime(2025, 7, 29, 12, 34))
+        with patch("destiny_calculator.ziwei._natal_chart", side_effect=AssertionError):
+            first, last = _browse_years(chart, (0, 1))
+            first_months = _browse_months(*first[1:])
+            last_months = _browse_months(*last[1:])
+        self.assertEqual((first[0], last[0]), (2025, 2026))
+        self.assertEqual(first[1], chart.query_datetime)
+        self.assertEqual(first[2], last[1])
+        self.assertEqual(last[1].isoformat(), "2026-02-17T00:00:00+08:00")
+        self.assertEqual(last[2].isoformat(), "2026-07-29T12:34:00+08:00")
+        self.assertEqual(first_months[0], ("閏六月（前半）", chart.query_datetime, chart.flow_month.ends_at))
+        self.assertEqual(first_months[1][0:2], ("閏六月（後半）", chart.flow_month.ends_at))
+        self.assertEqual(first_months[1][2].isoformat(), "2025-08-23T00:00:00+08:00")
+        self.assertEqual(first_months[-1][2], last_months[0][1])
+        self.assertEqual(last_months[-1][2], last[2])
+
+    def test_browse_respects_birth_calendar_and_decade_limits(self):
+        for local_birth, query, expected_end in (
+            (datetime(2099, 4, 1, 12), datetime(2099, 12, 31, 12), "2100-01-01T00:00:00+08:00"),
+            (datetime(1900, 1, 31), datetime(2022, 10, 1, 12), "2024-02-10T00:00:00+08:00"),
+        ):
+            with self.subTest(query=query):
+                birth = BirthData(local_birth, self.taipei, "female")
+                chart = calculate_ziwei(birth, query)
+                years = _browse_years(chart, (200, 5))
+                first, last = years[0], years[-1]
+                self.assertEqual(first[1], birth.resolved_datetime)
+                self.assertEqual(last[2].isoformat(), expected_end)
+                self.assertEqual(_browse_months(*first[1:])[0][1], first[1])
+                self.assertEqual(_browse_months(*last[1:])[-1][2], last[2])
+
+    def test_browse_zero_years_keeps_only_the_current_leap_month_half(self):
+        chart = calculate_ziwei(self.birth, datetime(2025, 8, 10, 14, 30))
+        self.assertEqual(
+            _browse_years(chart, (0, 0)),
+            ((2025, chart.query_datetime, chart.flow_month.ends_at),),
+        )
+        self.assertEqual(
+            _browse_months(chart.query_datetime, chart.flow_month.ends_at),
+            (("閏六月（後半）", chart.query_datetime, chart.flow_month.ends_at),),
+        )
 
     def test_childhood_and_first_decade(self):
         before = calculate_ziwei(self.birth, datetime(2002, 2, 11, 23, 59))

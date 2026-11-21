@@ -1,7 +1,6 @@
 """Ziwei sky charts with explicit rules and local lunar calendar periods."""
 
 import json
-from calendar import monthrange
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from importlib.metadata import version
@@ -13,18 +12,23 @@ from izthon.astro.functional_horoscope import FunctionalHoroscope, HoroscopeItem
 from izthon.astro.functional_palace import FunctionalPalace
 from izthon.data import STARS_INFO, earthly_branches, heavenly_stems
 from izthon.i18n import kot, t, using_language
-from izthon.lunar_lite import lunar_to_solar, solar_to_lunar
+from izthon.lunar_lite import LunarDate, lunar_to_solar, solar_to_lunar
 from izthon.star.functional_star import FunctionalStar
 from izthon.util import time_to_index
 
+from . import time_utils
 from .models import BirthData
 
 
 TRADITIONAL = str.maketrans({"闰": "閏", "腊": "臘"})
 BRANCHES = "子丑寅卯辰巳午未申酉戌亥"
 DISPLAY_NAMES = {"僕役": "交友", "三台": "三臺", "台輔": "臺輔"}
-DEFAULT_FLOW_YEARS = (0, 5)
-MAX_FLOW_YEARS = 200
+DEFAULT_FLOW_YEARS = time_utils.DEFAULT_FLOW_YEARS
+MAX_FLOW_YEARS = time_utils.MAX_FLOW_YEARS
+LUNAR_MONTH_NAMES = (
+    "正月", "二月", "三月", "四月", "五月", "六月",
+    "七月", "八月", "九月", "十月", "冬月", "臘月",
+)
 BRIGHTNESS_DATA = json.loads(
     files("destiny_calculator").joinpath("data/ziwei_brightness.json").read_text(encoding="utf-8")
 )
@@ -193,12 +197,7 @@ def _natal_chart(birth: BirthData) -> FunctionalAstrolabe:
     )
 
 
-def _flow_periods(
-    horoscope: FunctionalHoroscope, query: datetime
-) -> tuple[ZiweiPeriod, ZiweiPeriod]:
-    lunar = solar_to_lunar(query.date())
-    year_start = _lunar_day(lunar.lunar_year, 1)
-    year_end = _lunar_day(lunar.lunar_year + 1, 1)
+def _lunar_month_dates(lunar: LunarDate) -> tuple[date, date]:
     month_start = _lunar_day(lunar.lunar_year, lunar.lunar_month, leap=lunar.is_leap)
     probe = month_start + timedelta(days=30)
     next_lunar = solar_to_lunar(probe)
@@ -209,6 +208,16 @@ def _flow_periods(
             month_end = split
         else:
             month_start = split
+    return month_start, month_end
+
+
+def _flow_periods(
+    horoscope: FunctionalHoroscope, query: datetime
+) -> tuple[ZiweiPeriod, ZiweiPeriod]:
+    lunar = solar_to_lunar(query.date())
+    year_start = _lunar_day(lunar.lunar_year, 1)
+    year_end = _lunar_day(lunar.lunar_year + 1, 1)
+    month_start, month_end = _lunar_month_dates(lunar)
     zone = query.tzinfo
     return (
         _period(horoscope.yearly, year_start, year_end, zone),
@@ -216,17 +225,9 @@ def _flow_periods(
     )
 
 
-def _shift_years(instant: datetime, years: int) -> datetime:
-    if years == 0:
-        return instant
-    year = instant.year + years
-    day = min(instant.day, monthrange(year, instant.month)[1])
-    return instant.replace(year=year, day=day, fold=0).astimezone(UTC).astimezone(instant.tzinfo)
-
-
-def _flow_forecast(
+def _flow_bounds(
     chart: ZiweiChart, years: tuple[int, int]
-) -> dict[str, datetime | list[ZiweiPeriod]]:
+) -> tuple[datetime, datetime, datetime, datetime]:
     if len(years) != 2 or any(
         type(value) is not int or not 0 <= value <= MAX_FLOW_YEARS for value in years
     ):
@@ -234,22 +235,66 @@ def _flow_forecast(
     before, after = years
     query = chart.query_datetime
     zone = query.tzinfo
-    requested_start = _shift_years(query, -before)
-    requested_end = _shift_years(query, after)
+    requested_start = time_utils.shift_local_years(query, -before)
+    requested_end = time_utils.shift_local_years(query, after)
     start = max(requested_start.astimezone(UTC), chart.birth.utc_datetime).astimezone(zone)
     end = min(requested_end.astimezone(UTC), _midnight(date(2100, 1, 1), zone).astimezone(UTC))
-    annual, monthly = [], []
     if start.astimezone(UTC) < end:
-        natal = _natal_chart(chart.birth)
+        birth_lunar_year = solar_to_lunar(chart.birth.local_datetime.date()).lunar_year
         last_age = max(p.decadal_age_range[1] for p in chart.palaces)
         # Nominal age reaches last_age + 1 at this lunar new year.
-        first_unsupported_year = natal.raw_dates["lunar_date"].lunar_year + last_age
+        first_unsupported_year = birth_lunar_year + last_age
         if first_unsupported_year <= end.astimezone(zone).year:
             limit = _midnight(_lunar_day(first_unsupported_year, 1), zone).astimezone(UTC)
             end = min(end, limit)
+    return requested_start, requested_end, start, end.astimezone(zone)
 
+
+def _browse_years(
+    chart: ZiweiChart, years: tuple[int, int]
+) -> tuple[tuple[int, datetime, datetime], ...]:
+    _, _, cursor, end = _flow_bounds(chart, years)
+    if tuple(years) == (0, 0):
+        year = solar_to_lunar(cursor.date()).lunar_year
+        return ((year, cursor, chart.flow_month.ends_at),)
+
+    periods = []
+    end_utc = end.astimezone(UTC)
+    while cursor.astimezone(UTC) < end_utc:
+        year = solar_to_lunar(cursor.date()).lunar_year
+        next_year = _midnight(_lunar_day(year + 1, 1), cursor.tzinfo)
+        periods.append((year, cursor, min(next_year, end, key=lambda value: value.astimezone(UTC))))
+        cursor = next_year
+    return tuple(periods)
+
+
+def _browse_months(start: datetime, end: datetime) -> tuple[tuple[str, datetime, datetime], ...]:
+    periods = []
+    cursor = start
+    end_utc = end.astimezone(UTC)
+    while cursor.astimezone(UTC) < end_utc:
+        lunar = solar_to_lunar(cursor.date())
+        label = LUNAR_MONTH_NAMES[lunar.lunar_month - 1]
+        if lunar.is_leap:
+            half = "前半" if lunar.lunar_day <= 15 else "後半"
+            label = f"閏{label}（{half}）"
+        _, month_end = _lunar_month_dates(lunar)
+        next_month = _midnight(month_end, cursor.tzinfo)
+        periods.append((label, cursor, min(next_month, end, key=lambda value: value.astimezone(UTC))))
+        cursor = next_month
+    return tuple(periods)
+
+
+def _flow_forecast(
+    chart: ZiweiChart, years: tuple[int, int]
+) -> dict[str, datetime | list[ZiweiPeriod]]:
+    requested_start, requested_end, start, end = _flow_bounds(chart, years)
+    annual, monthly = [], []
+    end_utc = end.astimezone(UTC)
+    if start.astimezone(UTC) < end_utc:
+        natal = _natal_chart(chart.birth)
         cursor = start
-        while cursor.astimezone(UTC) < end:
+        while cursor.astimezone(UTC) < end_utc:
             horoscope = natal.horoscope(cursor.replace(tzinfo=None))
             year, month = _flow_periods(horoscope, cursor)
             if not annual or annual[-1].starts_at != year.starts_at:
@@ -263,7 +308,7 @@ def _flow_forecast(
         "requested_starts_at": requested_start,
         "requested_ends_at": requested_end,
         "starts_at": start,
-        "ends_at": end.astimezone(zone),
+        "ends_at": end,
         "years": annual,
         "months": monthly,
     }

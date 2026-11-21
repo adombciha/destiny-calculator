@@ -6,8 +6,11 @@ from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 
 from .bazi import BaziChart
+from .bazi import _flow_forecast as _bazi_flow_forecast
+from .time_utils import DEFAULT_FLOW_YEARS
 from .western import WesternChart
-from .ziwei import DEFAULT_FLOW_YEARS, ZiweiChart, _flow_forecast
+from .ziwei import ZiweiChart
+from .ziwei import _flow_forecast as _ziwei_flow_forecast
 
 
 def _value(value):
@@ -28,6 +31,7 @@ def export_report_json(
     errors: dict[str, str] | None = None,
     generated_at: datetime | None = None,
     ziwei_years: tuple[int, int] = DEFAULT_FLOW_YEARS,
+    bazi_years: tuple[int, int] = DEFAULT_FLOW_YEARS,
 ) -> str:
     if not charts:
         raise ValueError("At least one calculated chart is required.")
@@ -58,8 +62,10 @@ def export_report_json(
             raise ValueError("A report cannot contain duplicate chart systems.")
         data = _value(chart)
         data.pop("birth")
-        if isinstance(chart, ZiweiChart):
-            data["flow_forecast"] = _value(_flow_forecast(chart, ziwei_years))
+        if isinstance(chart, BaziChart):
+            data["flow_forecast"] = _value(_bazi_flow_forecast(chart, bazi_years))
+        elif isinstance(chart, ZiweiChart):
+            data["flow_forecast"] = _value(_ziwei_flow_forecast(chart, ziwei_years))
         results[name] = {
             "status": (
                 "partial"
@@ -98,5 +104,6 @@ def export_chart_json(
     chart: BaziChart | ZiweiChart | WesternChart,
     *,
     ziwei_years: tuple[int, int] = DEFAULT_FLOW_YEARS,
+    bazi_years: tuple[int, int] = DEFAULT_FLOW_YEARS,
 ) -> str:
-    return export_report_json((chart,), ziwei_years=ziwei_years)
+    return export_report_json((chart,), ziwei_years=ziwei_years, bazi_years=bazi_years)

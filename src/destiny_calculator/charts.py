@@ -19,6 +19,7 @@ TEAL = "#175f58"
 TEAL_TINT = "#eaf2ee"
 AMBER = "#855617"
 AMBER_TINT = "#fbf0df"
+MUTAGEN_KINDS = ("祿", "權", "科", "忌")
 LAYER_LABELS = {"natal": "本", "decadal": "限", "yearly": "年", "monthly": "月"}
 LAYER_COLORS = {
     "natal": INK,
@@ -80,7 +81,7 @@ def _rect(parent, x, y, width, height, fill="#ffffff", stroke=BORDER):
 
 def _wrap(value, width=40):
     lines, line, units = [], "", 0
-    for character in re.findall(r"\d+|[^\d]", str(value)):
+    for character in re.findall(rf"\d{{1,{width // 2}}}|[^\d]", str(value)):
         size = sum(1 if ord(c) < 128 and c not in "MW@%#&" else 2 for c in character)
         if character == "\n" or units + size > width:
             lines.append(line)
@@ -118,6 +119,22 @@ def _date(value: datetime):
     return value.isoformat(sep=" ", timespec="seconds")
 
 
+def ziwei_transformation_rows(chart: ZiweiChart) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return the four sources with stars in display column order."""
+    natal = {
+        star.mutagen: star.name
+        for palace in chart.palaces
+        for star in (*palace.major_stars, *palace.minor_stars, *palace.adjective_stars)
+        if star.mutagen
+    }
+    return (
+        ("本命", tuple(natal.get(kind, "—") for kind in MUTAGEN_KINDS)),
+        ("童限" if chart.is_childhood else "大限", chart.current_luck.mutagens),
+        ("流年", chart.flow_year.mutagens),
+        ("流月", chart.flow_month.mutagens),
+    )
+
+
 def render_ziwei_svg(chart: ZiweiChart, *, layers=("natal",)) -> str:
     if not isinstance(chart, ZiweiChart):
         raise ValueError("chart must be a ZiweiChart.")
@@ -141,7 +158,7 @@ def render_ziwei_svg(chart: ZiweiChart, *, layers=("natal",)) -> str:
                         continue
                     tags.extend(
                         LAYER_LABELS[layer] + kind
-                        for name, kind in zip(cycles[layer].mutagens, "祿權科忌")
+                        for name, kind in zip(cycles[layer].mutagens, MUTAGEN_KINDS)
                         if name == star.name
                     )
                 label = f"{group} {star.name}" + (
@@ -179,14 +196,55 @@ def render_ziwei_svg(chart: ZiweiChart, *, layers=("natal",)) -> str:
                 value = LAYER_LABELS[layer] + "曜：" + "、".join(s.name for s in flow_stars)
                 lines.extend((part, LAYER_COLORS[layer], {}) for part in _wrap(value))
         rows.append(lines)
+    summary = [
+        "出生：" + _date(chart.birth.resolved_datetime),
+        f"地點：{chart.birth.place.name}　{chart.birth.place.timezone}",
+        f"經緯度：{chart.birth.place.longitude}, {chart.birth.place.latitude}",
+        "農曆：" + chart.lunar_date,
+        f"命主：{chart.soul}　身主：{chart.body}",
+        f"{chart.five_elements_class}　子斗：{chart.zi_dou}",
+        "查詢：" + _date(chart.query_datetime),
+        f"{chart.query_lunar_date}　虛歲 {chart.nominal_age}",
+    ]
+    transformations = ziwei_transformation_rows(chart)
+    details = []
+    if len(layers) > 1:
+        decadal_label = "童限" if chart.is_childhood else "大限"
+        details.append(f"{decadal_label}：{chart.current_luck.gan_zhi}")
+    for layer in layers:
+        if layer in ("yearly", "monthly"):
+            period = cycles[layer]
+            details.extend(
+                [
+                    ("農曆流月：" if layer == "monthly" else "農曆流年：") + period.gan_zhi,
+                    _date(period.starts_at),
+                    "至 " + _date(period.ends_at) + "（不含）",
+                ]
+            )
+    details.extend(
+        [
+            "本命四化保留於星曜旁；運程不覆蓋本命。",
+            f"引擎 izthon {chart.engine_version}",
+            f"規則 {chart.rules_version}　版面 ziwei-svg-v1",
+        ]
+    )
+    summary_lines = [part for value in summary for part in _wrap(value)]
+    detail_lines = [part for value in details for part in _wrap(value)]
+    line_height, table_row_height = 28, 34
+    table_height = (1 + len(transformations)) * table_row_height
+    summary_height = 44 + (len(summary_lines) + len(detail_lines) + 1) * line_height + table_height
     width, cell_width, top = 1400, 350, 76
-    cell_height = max(430, max(len(row) for row in rows) * 23 + 76)
+    cell_height = max(430, max(len(row) for row in rows) * 23 + 76, (summary_height + 1) // 2)
     height = top + 4 * cell_height + 42
     title = "紫微斗數｜" + "・".join(
         {"natal": "本命", "decadal": "大限", "yearly": "流年", "monthly": "流月"}[layer]
         for layer in layers
     )
-    svg = _document(width, height, title, "固定十二地支宮位；本命與運程四化分層顯示。")
+    description = f"固定十二地支宮位。查詢：{_date(chart.query_datetime)}。四化：" + "；".join(
+        label + " " + "、".join(f"{kind} {name}" for kind, name in zip(MUTAGEN_KINDS, names))
+        for label, names in transformations
+    )
+    svg = _document(width, height, title, description)
     _text(
         svg,
         24,
@@ -215,52 +273,32 @@ def render_ziwei_svg(chart: ZiweiChart, *, layers=("natal",)) -> str:
         for n, (label, color, attrs) in enumerate(lines):
             _text(group, x + 14, y + 68 + n * 23, label, size=16, color=color, **attrs)
     x, y = cell_width + 26, top + cell_height + 44
-    summary = [
-        "出生：" + _date(chart.birth.resolved_datetime),
-        f"地點：{chart.birth.place.name}　{chart.birth.place.timezone}",
-        f"經緯度：{chart.birth.place.longitude}, {chart.birth.place.latitude}",
-        "農曆：" + chart.lunar_date,
-        f"命主：{chart.soul}　身主：{chart.body}",
-        f"{chart.five_elements_class}　子斗：{chart.zi_dou}",
-    ]
-    if len(layers) > 1:
-        summary.extend(
-            [
-                "查詢：" + _date(chart.query_datetime),
-                f"{chart.query_lunar_date}　虛歲 {chart.nominal_age}",
-                ("童限：" if chart.is_childhood else "大限：") + chart.current_luck.gan_zhi,
-            ]
-        )
-    for layer in layers:
-        if layer == "natal":
-            continue
-        cycle = cycles[layer]
-        summary.append(
-            f"{LAYER_LABELS[layer]}四化："
-            + "　".join(name + "化" + kind for name, kind in zip(cycle.mutagens, "祿權科忌"))
-        )
-        if layer in ("yearly", "monthly"):
-            period = cycles[layer]
-            summary.extend(
-                [
-                    ("農曆流月：" if layer == "monthly" else "農曆流年：") + period.gan_zhi,
-                    _date(period.starts_at),
-                    "至 " + _date(period.ends_at) + "（不含）",
-                ]
+    center = SubElement(svg, "g", {"data-section": "summary"})
+    for line in summary_lines:
+        _text(center, x, y, line, size=16)
+        y += line_height
+    table = SubElement(center, "g", {"data-section": "transformations"})
+    column_width = (2 * cell_width - 52) // (1 + len(MUTAGEN_KINDS))
+    for row_index, (label, names) in enumerate((("層次", MUTAGEN_KINDS), *transformations)):
+        row = SubElement(table, "g")
+        fill = "#ffffff" if row_index else TEAL_TINT
+        for column, value in enumerate((label, *names)):
+            left = x + column * column_width
+            weight = "normal" if row_index and column else "bold"
+            _rect(row, left, y, column_width, table_row_height, fill)
+            _text(
+                row,
+                left + column_width / 2,
+                y + 23,
+                value,
+                size=17,
+                **{"text-anchor": "middle", "font-weight": weight},
             )
-    summary.extend(
-        [
-            "本命四化保留於星曜旁；運程不覆蓋本命。",
-            f"引擎 izthon {chart.engine_version}",
-            f"規則 {chart.rules_version}　版面 ziwei-svg-v1",
-        ]
-    )
-    for value in summary:
-        for part in _wrap(value, 76):
-            _text(svg, x, y, part, size=16)
-            y += 28
-    if y > top + 3 * cell_height - 16:
-        raise ValueError("The chart summary exceeds the available layout area.")
+        y += table_row_height
+    y += line_height
+    for line in detail_lines:
+        _text(center, x, y, line, size=16)
+        y += line_height
     _text(
         svg,
         24,
